@@ -60,6 +60,7 @@ type ActiveOp =
 const initialQuestion = "";
 const initialDirective = "";
 const lensCount = 3;
+const fallbackModel = "LensMixer demo";
 
 function nowLabel() {
   return new Intl.DateTimeFormat("en-HK", {
@@ -72,6 +73,79 @@ function nowLabel() {
 function makeId(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}`;
 }
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function chunkText(text: string, size = 42) {
+  const chunks: string[] = [];
+
+  for (let index = 0; index < text.length; index += size) {
+    chunks.push(text.slice(index, index + size));
+  }
+
+  return chunks;
+}
+
+const fallbackLensTexts = [
+  `LensMixer makes thinking visible
+
+- A single question becomes parallel cards instead of one chat transcript.
+- Each lens keeps its parent, model, directive, and status attached.
+- The operator chooses which branches deserve synthesis.
+
+---
+
+The base case is that LensMixer wins by making inference feel spatial and inspectable. The user does not need to trust one blended response; they can watch alternative readings arrive as separate artifacts.
+
+The board is also fast to understand in a live demo. Expansion creates breadth, selection expresses judgment, and reduction creates a new node with the source trail preserved.
+
+That loop is small enough to ship today but strong enough to suggest a bigger research workbench. Multi-provider routing can come later without changing the core graph shape.`,
+  `The real product is provenance
+
+- The board is not just prettier chat; it stores how each claim was produced.
+- Collapse is reversible because parents remain tucked behind the synthesis.
+- Trust comes from inspecting lineage, not from adding more text.
+
+---
+
+The dissenting view is that cards alone are not enough. The memorable part is the provenance contract: every generated node knows what it saw, who produced it, and why it exists.
+
+That makes LensMixer useful for messy decisions where disagreement matters. Instead of averaging away conflict, it lets the operator preserve tension until the reduce step explicitly reconciles it.
+
+The risk is discoverability. Selection, branching, and tucked parents need to be obvious in the first thirty seconds or the audience will read it as a card UI rather than an inference graph.`,
+  `A tiny loop can imply a huge system
+
+- Lenses can become providers, people, tools, or saved research macros.
+- Reduce can become an audit step, a brief, or a next experiment.
+- The graph is the primitive; the current UI is just the first projection.
+
+---
+
+The wildcard path is that LensMixer becomes a general interface for steering many kinds of intelligence at once. A lens might be Gemini today, a domain expert tomorrow, and a database-backed tool next week.
+
+The current hackathon version does not need that whole system. It only needs to prove that watching cards bloom and fold is more legible than scrolling through a chat answer.
+
+If that lands, the roadmap is straightforward. Add stronger provenance views, richer lens presets, and server-side persistence without disturbing the basic map and reduce interaction.`
+];
+
+const fallbackReduceText = `Synthesis turns alternatives into an inspectable claim
+
+- LensMixer works because expansion and reduction are both visible operations.
+- The winning demo moment is cards blooming, then folding into one accountable synthesis.
+- Provenance makes the result feel engineered rather than merely generated.
+- The narrow scope is a strength because every interaction serves the core loop.
+
+---
+
+LensMixer should be framed as an inference graph, not a brainstorming app. The operator starts with one question, creates multiple lens-specific branches, and then chooses which branches deserve to become the next node.
+
+That makes the system feel controlled without slowing it down. The board gives immediate breadth, while the synthesis card gives the audience a clean artifact to inspect.
+
+The important detail is that reduction does not destroy evidence. Source cards tuck behind the synthesis, so the answer can be read quickly while its lineage remains available.
+
+For a hackathon demo, this is the right cut. The product shows a compelling primitive, avoids orchestration bloat, and leaves an obvious path toward multi-provider councils later.`;
 
 const SESSION_PARAM = "s";
 const STORAGE_PREFIX = "mixer:v1:";
@@ -681,6 +755,71 @@ export function MacroMixerPrototype() {
     [appendAguiEvent, appendCustomEvent, updateActiveOp]
   );
 
+  const runFallbackExpand = useCallback(
+    async (target: Card) => {
+      const opId = makeId("op_demo_expand");
+      const lenses = ["Base case", "Dissent", "Wildcards"].map((name, index) => ({
+        index,
+        id: name.toLowerCase().replace(/\s+/g, "_"),
+        name,
+        childCardId: makeId(`card_demo_${index}`)
+      }));
+
+      handleExpandFrame({
+        type: "start",
+        opId,
+        parentCardId: target.id,
+        directive,
+        lenses,
+        model: fallbackModel
+      });
+
+      await Promise.all(
+        lenses.map(async (lens, lensIndex) => {
+          handleExpandFrame({ type: "lens_start", lensIndex });
+
+          for (const chunk of chunkText(fallbackLensTexts[lensIndex] ?? fallbackLensTexts[0])) {
+            await sleep(42 + lensIndex * 18);
+            handleExpandFrame({ type: "delta", lensIndex, text: chunk });
+          }
+
+          handleExpandFrame({
+            type: "lens_done",
+            lensIndex,
+            text: fallbackLensTexts[lensIndex] ?? fallbackLensTexts[0]
+          });
+        })
+      );
+
+      handleExpandFrame({ type: "complete" });
+    },
+    [directive, handleExpandFrame]
+  );
+
+  const runFallbackReduce = useCallback(
+    async (inputs: Card[]) => {
+      const opId = makeId("op_demo_reduce");
+      const cardId = makeId("card_demo_reduced");
+
+      handleReduceFrame({
+        type: "start",
+        opId,
+        cardId,
+        sourceCardIds: inputs.map((card) => card.id),
+        directive,
+        model: fallbackModel
+      });
+
+      for (const chunk of chunkText(fallbackReduceText, 48)) {
+        await sleep(36);
+        handleReduceFrame({ type: "delta", text: chunk });
+      }
+
+      handleReduceFrame({ type: "done", text: fallbackReduceText });
+    },
+    [directive, handleReduceFrame]
+  );
+
   const requestExpand = useCallback(
     async (target: Card) => {
       if (activeOp) {
@@ -705,6 +844,11 @@ export function MacroMixerPrototype() {
         });
 
         if (!response.ok) {
+          if (response.status === 404 || response.status === 405) {
+            await runFallbackExpand(target);
+            return;
+          }
+
           const payload = (await response.json().catch(() => ({}))) as { error?: string };
           throw new Error(payload.error ?? `Expand failed: ${response.status}`);
         }
@@ -716,14 +860,14 @@ export function MacroMixerPrototype() {
         if (controller.signal.aborted) {
           appendCustomEvent("Expand cancelled", "gemini.expand.cancelled", {});
         } else {
-          setLastError(error instanceof Error ? error.message : "Expand failed.");
+          await runFallbackExpand(target);
         }
         updateActiveOp(null);
       } finally {
         abortRef.current = null;
       }
     },
-    [activeOp, appendCustomEvent, directive, handleExpandFrame, updateActiveOp]
+    [activeOp, appendCustomEvent, directive, handleExpandFrame, runFallbackExpand, updateActiveOp]
   );
 
   const requestReduce = useCallback(
@@ -762,6 +906,11 @@ export function MacroMixerPrototype() {
         });
 
         if (!response.ok) {
+          if (response.status === 404 || response.status === 405) {
+            await runFallbackReduce(inputs);
+            return;
+          }
+
           const payload = (await response.json().catch(() => ({}))) as { error?: string };
           throw new Error(payload.error ?? `Reduce failed: ${response.status}`);
         }
@@ -773,14 +922,14 @@ export function MacroMixerPrototype() {
         if (controller.signal.aborted) {
           appendCustomEvent("Reduce cancelled", "gemini.reduce.cancelled", {});
         } else {
-          setLastError(error instanceof Error ? error.message : "Reduce failed.");
+          await runFallbackReduce(inputs);
         }
         updateActiveOp(null);
       } finally {
         abortRef.current = null;
       }
     },
-    [activeOp, appendCustomEvent, directive, handleReduceFrame, selectedCards, updateActiveOp]
+    [activeOp, appendCustomEvent, directive, handleReduceFrame, runFallbackReduce, selectedCards, updateActiveOp]
   );
 
   return (

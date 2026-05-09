@@ -3,7 +3,7 @@
   "build": {
     "install": "npm ci",
     "command": "npm run build",
-    "publish": "dist"
+    "publish": "out"
   },
   "hostname": "lensmixer.com",
   "site_id": 108,
