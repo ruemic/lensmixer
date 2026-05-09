@@ -12,6 +12,7 @@ export const runtime = "nodejs";
 type ReduceRequest = {
   cards?: Array<{ id: string; title: string; lensName?: string; text: string }>;
   directive?: string;
+  cardId?: string;
 };
 
 type CategorizedError = {
@@ -71,7 +72,7 @@ export async function POST(request: Request) {
 
   const directive = body.directive?.trim() ?? "";
   const opId = newId("op_reduce");
-  const cardId = newId("card_reduced");
+  const cardId = body.cardId?.trim() || newId("card_reduced");
   const sourceCardIds = cards.map((card) => card.id);
 
   const stream = new ReadableStream<Uint8Array>({

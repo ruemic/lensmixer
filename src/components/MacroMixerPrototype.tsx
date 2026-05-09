@@ -57,10 +57,20 @@ type ActiveOp =
       sourceCardIds: string[];
     };
 
+type ReduceMotion =
+  | {
+      phase: "draining" | "streaming" | "promoting" | "settled";
+      cardId: string;
+      sourceCardIds: string[];
+      progress: number;
+    }
+  | null;
+
 const initialQuestion = "";
 const initialDirective = "";
 const lensCount = 3;
 const fallbackModel = "LensMixer demo";
+const reduceDrainDurationMs = 7600;
 
 function nowLabel() {
   return new Intl.DateTimeFormat("en-HK", {
@@ -203,6 +213,7 @@ export function MacroMixerPrototype() {
   const [activeOp, setActiveOp] = useState<ActiveOp | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [openCardId, setOpenCardId] = useState<string | null>(null);
+  const [reduceMotion, setReduceMotion] = useState<ReduceMotion>(null);
 
   const cardRefs = useRef(new Map<string, HTMLElement>());
   const selectionBaseRef = useRef<string[]>([]);
@@ -210,13 +221,68 @@ export function MacroMixerPrototype() {
   const suppressClickRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const activeOpRef = useRef<ActiveOp | null>(null);
+  const reduceMotionRef = useRef<ReduceMotion>(null);
   const sessionIdRef = useRef<string | null>(null);
   const hydratedRef = useRef(false);
+  const drainTimerRef = useRef<number | null>(null);
 
   const updateActiveOp = useCallback((op: ActiveOp | null) => {
     activeOpRef.current = op;
     setActiveOp(op);
   }, []);
+
+  useEffect(() => {
+    reduceMotionRef.current = reduceMotion;
+  }, [reduceMotion]);
+
+  const clearDrainTimer = useCallback(() => {
+    if (drainTimerRef.current !== null) {
+      window.clearInterval(drainTimerRef.current);
+      drainTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => clearDrainTimer, [clearDrainTimer]);
+
+  const startReduceDrain = useCallback(
+    (cardId: string, sourceCardIds: string[]) =>
+      new Promise<void>((resolve) => {
+        clearDrainTimer();
+        const startedAt = performance.now();
+
+        const initialMotion = {
+          phase: "draining",
+          cardId,
+          sourceCardIds,
+          progress: 0
+        } satisfies NonNullable<ReduceMotion>;
+        reduceMotionRef.current = initialMotion;
+        setReduceMotion(initialMotion);
+
+        drainTimerRef.current = window.setInterval(() => {
+          const progress = Math.min((performance.now() - startedAt) / reduceDrainDurationMs, 1);
+          setReduceMotion((current) => {
+            if (current?.cardId !== cardId) {
+              return current;
+            }
+
+            const next = {
+                  ...current,
+                  progress,
+                  phase: progress >= 1 ? "streaming" : "draining"
+                } satisfies NonNullable<ReduceMotion>;
+            reduceMotionRef.current = next;
+            return next;
+          });
+
+          if (progress >= 1) {
+            clearDrainTimer();
+            resolve();
+          }
+        }, 32);
+      }),
+    [clearDrainTimer]
+  );
 
   useEffect(() => {
     setCards((current) =>
@@ -639,14 +705,32 @@ export function MacroMixerPrototype() {
         };
 
         updateActiveOp(op);
-        setCards((current) => [
-          ...current.map((card) =>
-            frame.sourceCardIds.includes(card.id)
-              ? { ...card, collapsedIntoId: frame.cardId }
-              : card
-          ),
-          synthesisCard
-        ]);
+        setReduceMotion((current) =>
+          current?.cardId === frame.cardId
+            ? current
+            : {
+                phase: "draining",
+                cardId: frame.cardId,
+                sourceCardIds: frame.sourceCardIds,
+                progress: 0
+              }
+        );
+        setCards((current) =>
+          current.some((card) => card.id === frame.cardId)
+            ? current.map((card) =>
+                card.id === frame.cardId
+                  ? {
+                      ...card,
+                      directive: frame.directive,
+                      provider: "Gemini",
+                      model: frame.model,
+                      status: "streaming",
+                      opId: frame.opId
+                    }
+                  : card
+              )
+            : [...current, synthesisCard]
+        );
         setSelectedIds([]);
         appendAguiEvent("Reduce run started", aguiRunStarted(frame.opId));
         appendCustomEvent("Reduce started", "gemini.reduce.started", {
@@ -722,9 +806,38 @@ export function MacroMixerPrototype() {
             })
           );
           appendAguiEvent("Reduce run finished", aguiRunFinished(op.opId, {}));
-        }
+          const promote = () => {
+            clearDrainTimer();
+            const promotingMotion = {
+              phase: "promoting",
+              cardId: op.cardId,
+              sourceCardIds: op.sourceCardIds,
+              progress: 1
+            } satisfies NonNullable<ReduceMotion>;
+            reduceMotionRef.current = promotingMotion;
+            setReduceMotion(promotingMotion);
+            setCards((current) =>
+              current.map((card) =>
+                op.sourceCardIds.includes(card.id)
+                  ? { ...card, collapsedIntoId: op.cardId }
+                  : card
+              )
+            );
 
-        updateActiveOp(null);
+            window.setTimeout(() => {
+              const settledMotion = {
+                phase: "settled",
+                cardId: op.cardId,
+                sourceCardIds: op.sourceCardIds,
+                progress: 1
+              } satisfies NonNullable<ReduceMotion>;
+              reduceMotionRef.current = settledMotion;
+              setReduceMotion(settledMotion);
+              updateActiveOp(null);
+            }, 240);
+          };
+          promote();
+        }
         return;
       }
 
@@ -749,10 +862,12 @@ export function MacroMixerPrototype() {
 
         appendAguiEvent("Reduce run error", aguiRunError(frame.message));
         setLastError(frame.message);
+        clearDrainTimer();
+        setReduceMotion(null);
         updateActiveOp(null);
       }
     },
-    [appendAguiEvent, appendCustomEvent, updateActiveOp]
+    [appendAguiEvent, appendCustomEvent, clearDrainTimer, updateActiveOp]
   );
 
   const runFallbackExpand = useCallback(
@@ -797,9 +912,9 @@ export function MacroMixerPrototype() {
   );
 
   const runFallbackReduce = useCallback(
-    async (inputs: Card[]) => {
+    async (inputs: Card[], stagedCardId?: string) => {
       const opId = makeId("op_demo_reduce");
-      const cardId = makeId("card_demo_reduced");
+      const cardId = stagedCardId ?? makeId("card_demo_reduced");
 
       handleReduceFrame({
         type: "start",
@@ -886,6 +1001,24 @@ export function MacroMixerPrototype() {
       }
 
       setLastError(null);
+      const cardId = makeId("card_reduced");
+      const sourceCardIds = inputs.map((card) => card.id);
+      const synthesisCard: Card = {
+        id: cardId,
+        kind: "synthesis",
+        title: "Synthesis",
+        text: "",
+        parentIds: sourceCardIds,
+        directive,
+        provider: "Gemini",
+        model: fallbackModel,
+        status: "queued",
+        opId: makeId("op_reduce_pending"),
+        createdAt: nowLabel()
+      };
+      setCards((current) => [...current, synthesisCard]);
+      setSelectedIds([]);
+      void startReduceDrain(cardId, sourceCardIds);
       const controller = new AbortController();
       abortRef.current = controller;
 
@@ -900,14 +1033,15 @@ export function MacroMixerPrototype() {
               lensName: card.lensName,
               text: card.text
             })),
-            directive
+            directive,
+            cardId
           }),
           signal: controller.signal
         });
 
         if (!response.ok) {
           if (response.status === 404 || response.status === 405) {
-            await runFallbackReduce(inputs);
+            await runFallbackReduce(inputs, cardId);
             return;
           }
 
@@ -922,14 +1056,14 @@ export function MacroMixerPrototype() {
         if (controller.signal.aborted) {
           appendCustomEvent("Reduce cancelled", "gemini.reduce.cancelled", {});
         } else {
-          await runFallbackReduce(inputs);
+          await runFallbackReduce(inputs, cardId);
         }
         updateActiveOp(null);
       } finally {
         abortRef.current = null;
       }
     },
-    [activeOp, appendCustomEvent, directive, handleReduceFrame, runFallbackReduce, selectedCards, updateActiveOp]
+    [activeOp, appendCustomEvent, directive, handleReduceFrame, runFallbackReduce, selectedCards, startReduceDrain, updateActiveOp]
   );
 
   return (
@@ -947,6 +1081,7 @@ export function MacroMixerPrototype() {
             onToggleSelection={toggleSelection}
             onOpenCard={(card) => setOpenCardId(card.id)}
             onExpandCard={(card) => void requestExpand(card)}
+            reduceMotion={reduceMotion}
             onPointerDown={handleSelectionPointerDown}
             onPointerMove={handleSelectionPointerMove}
             onPointerUp={handleSelectionPointerUp}
