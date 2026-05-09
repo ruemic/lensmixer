@@ -1,0 +1,11 @@
+{
+  "api_base": "https://radicchio.bitter.sh",
+  "build": {
+    "install": "npm ci",
+    "command": "npm run build",
+    "publish": "dist"
+  },
+  "hostname": "lensmixer.com",
+  "site_id": 108,
+  "site_name": "lensmixer"
+}
