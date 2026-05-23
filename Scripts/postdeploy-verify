@@ -11,6 +11,41 @@
         VERIFY_RUN_MODE="${VERIFY_RUN_MODE:-deploy}"
         VERIFY_MANIFEST_PATH="${VERIFY_MANIFEST_PATH:-ops/manifest.json}"
         SMOKE_PATHS="${VERIFY_SMOKE_PATHS:-/}"
+        EXPECTED_CSP="default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; upgrade-insecure-requests"
+        EXPECTED_PERMISSIONS_POLICY="camera=(), microphone=(), geolocation=(), payment=(), usb=(), accelerometer=(), gyroscope=(), magnetometer=(), interest-cohort=(), browsing-topics=()"
+
+        header_value() {
+          local name="$1"
+          python3 -c 'import sys
+target = sys.argv[1].lower()
+for line in sys.stdin:
+    if ":" not in line:
+        continue
+    name, value = line.split(":", 1)
+    if name.strip().lower() == target:
+        print(value.strip(), end="")
+        break
+' "$name"
+        }
+
+        assert_header() {
+          local path="$1"
+          local header="$2"
+          local expected="$3"
+          local url="${VERIFY_BASE_URL%/}${path}"
+          local headers
+          local observed
+
+          headers="$(curl -fsSL -o /dev/null -D - "$url" | tr -d '\r')"
+          observed="$(printf '%s' "$headers" | header_value "$header")"
+
+          if [ "$observed" != "$expected" ]; then
+            echo "Unexpected ${header} at ${url}" >&2
+            echo "Expected: ${expected}" >&2
+            echo "Observed: ${observed:-<missing>}" >&2
+            exit 1
+          fi
+        }
 
         manifest_sha_path() {
           if [ -f "$VERIFY_MANIFEST_PATH" ]; then
@@ -181,3 +216,12 @@ PY
             run_http_check "$path" "$path" "200" "3000"
           done
         fi
+
+        assert_header "/" "Content-Security-Policy" "$EXPECTED_CSP"
+        assert_header "/" "Strict-Transport-Security" "max-age=31536000; includeSubDomains"
+        assert_header "/" "X-Content-Type-Options" "nosniff"
+        assert_header "/" "X-Frame-Options" "DENY"
+        assert_header "/" "Referrer-Policy" "strict-origin-when-cross-origin"
+        assert_header "/" "Permissions-Policy" "$EXPECTED_PERMISSIONS_POLICY"
+
+        echo "Verified ${VERIFY_BASE_URL}"

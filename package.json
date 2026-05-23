@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:headers": "node --test Scripts/static-headers.test.mjs"
   },
   "dependencies": {
     "@ag-ui/core": "^0.0.53",
@@ -20,7 +21,9 @@
     "tailwindcss": "^4.2.4"
   },
   "overrides": {
-    "postcss": "8.5.14"
+    "postcss": "8.5.14",
+    "protobufjs": "7.6.1",
+    "ws": "8.21.0"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.1.2",

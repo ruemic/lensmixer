@@ -13,6 +13,7 @@ require "zlib"
 class RadicchioCli
   DEFAULT_MANIFEST = "radicchio.json"
   ALLOWED_EXTENSIONS = %w[.html .css .js .json .txt .xml .svg .ico .png .jpg .jpeg .gif .webp .woff .woff2 .ttf .eot .webmanifest .mjs .wasm].freeze
+  ALLOWED_BASENAMES = %w[_headers].freeze
   GZIP_THRESHOLD = 512 * 1024 # compress request bodies > 512 KB
   BUN_INSTALL_URL = "https://bun.sh/install".freeze
 
@@ -186,7 +187,7 @@ class RadicchioCli
       full = output_dir.join(relative)
       next unless full.file?
       next if relative.start_with?(".")
-      next unless ALLOWED_EXTENSIONS.include?(full.extname.downcase)
+      next unless deployable_path?(full)
 
       bytes = full.binread
       total_bytes += bytes.bytesize
@@ -201,6 +202,11 @@ class RadicchioCli
       descriptors: descriptors,
       total_bytes: total_bytes
     }
+  end
+
+  def deployable_path?(path)
+    ALLOWED_EXTENSIONS.include?(path.extname.downcase) ||
+      ALLOWED_BASENAMES.include?(path.basename.to_s)
   end
 
   def run_command(command)
